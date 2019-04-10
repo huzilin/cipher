@@ -1,66 +1,144 @@
-/*
- * Generates a private/public key pair in PEM format (not Certificate)
- *
- * The generated private key can be parsed with openssl as follows:
- * > openssl rsa -in key.pem -text
- *
- * The generated public key can be parsed as follows:
- * > openssl rsa -pubin -in pub.pem -text
- */
-package main
+package ciphers
 
 import (
-	"crypto/rsa"
+	"fmt"
+	"strconv"
+	"strings"
+
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 )
 
-func main() {
-	// priv *rsa.PrivateKey;
-	// err error;
-	priv, err := rsa.GenerateKey(rand.Reader, 2014);
+// GenerateKeyPair generates a new key pair
+func GenerateKeyPair(bits int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
+	privkey, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
-		fmt.Println(err);
-		return;
+		return nil, nil, err
 	}
-	err = priv.Validate();
+	return privkey, &privkey.PublicKey, nil
+}
+
+// PrivateKeyToBytes private key to bytes
+func PrivateKeyToBytes(priv *rsa.PrivateKey) []byte {
+	privBytes := pem.EncodeToMemory(
+		&pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(priv),
+		},
+	)
+
+	return privBytes
+}
+
+// PublicKeyToBytes public key to bytes
+func PublicKeyToBytes(pub *rsa.PublicKey) ([]byte, error) {
+	pubASN1, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
-		fmt.Println("Validation failed.", err);
+		return nil, err
 	}
 
-	// Get der format. priv_der []byte
-	priv_der := x509.MarshalPKCS1PrivateKey(priv);
+	pubBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PUBLIC KEY",
+		Bytes: pubASN1,
+	})
 
-	// pem.Block
-	// blk pem.Block
-	priv_blk := pem.Block {
-	Type: "RSA PRIVATE KEY",
-	Headers: nil,
-	Bytes: priv_der,
-	};
+	return pubBytes, nil
+}
 
-	// Resultant private key in PEM format.
-	// priv_pem string
-	priv_pem := string(pem.EncodeToMemory(&priv_blk));
-
-	fmt.Printf(priv_pem);
-
-	// Public Key generation
-
-	pub := priv.PublicKey;
-	pub_der, err := x509.MarshalPKIXPublicKey(&pub);
+// BytesToPrivateKey bytes to private key
+func BytesToPrivateKey(priv []byte) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode(priv)
+	enc := x509.IsEncryptedPEMBlock(block)
+	b := block.Bytes
+	var err error
+	if enc {
+		fmt.Println("is encrypted pem block")
+		b, err = x509.DecryptPEMBlock(block, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	key, err := x509.ParsePKCS1PrivateKey(b)
 	if err != nil {
-		fmt.Println("Failed to get der format for PublicKey.", err);
-		return;
+		return nil, err
+	}
+	return key, nil
+}
+
+// BytesToPublicKey bytes to public key
+func BytesToPublicKey(pub []byte) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode(pub)
+	enc := x509.IsEncryptedPEMBlock(block)
+	b := block.Bytes
+	var err error
+	if enc {
+		fmt.Println("is encrypted pem block")
+		b, err = x509.DecryptPEMBlock(block, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	ifc, err := x509.ParsePKIXPublicKey(b)
+	if err != nil {
+		return nil, err
+	}
+	key, ok := ifc.(*rsa.PublicKey)
+	if !ok {
+		return nil, err
+	}
+	return key, nil
+}
+
+// EncryptWithPublicKey encrypts data with public key
+func EncryptWithPublicKey(msg []byte, pub *rsa.PublicKey) ([]byte, error) {
+	hash := sha512.New()
+	ciphertext, err := rsa.EncryptOAEP(hash, rand.Reader, pub, msg, nil)
+	if err != nil {
+		return nil, err
+	}
+	return ciphertext, nil
+}
+
+// DecryptWithPrivateKey decrypts data with private key
+func DecryptWithPrivateKey(ciphertext []byte, priv *rsa.PrivateKey) ([]byte, error) {
+	hash := sha512.New()
+	plaintext, err := rsa.DecryptOAEP(hash, rand.Reader, priv, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+	return plaintext, nil
+}
+
+func GenerateCipherNumericString(publicKey *rsa.PublicKey, msg string) (string, error) {
+	ciphertext, err := EncryptWithPublicKey([]byte(msg), publicKey)
+	if err != nil {
+		return "", err
+	}
+	cipherNumericString := ""
+	for _, value := range ciphertext {
+		cipherNumericString = strings.Join([]string{cipherNumericString, strconv.Itoa(int(value))}, ",")
+	}
+	return cipherNumericString[1:], nil
+}
+
+func CipherNumericString2ByteSlice(numericString string) ([]byte, error) {
+	var CipherText []byte
+	CipherStringSlice := strings.Split(numericString, ",")
+	if len(CipherStringSlice) != 256 {
+		err := fmt.Errorf("CipherNumericString length illegal.")
+		return CipherText, err
 	}
 
-	pub_blk := pem.Block {
-	Type: "PUBLIC KEY",
-	Headers: nil,
-	Bytes: pub_der,
+	for _, v := range CipherStringSlice {
+		if s, err := strconv.Atoi(v); err != nil {
+			err := fmt.Errorf("CipherNumericString convert to int failed.")
+			return CipherText, err
+		} else {
+			CipherText = append(CipherText, byte(s))
+		}
 	}
-	pub_pem := string(pem.EncodeToMemory(&pub_blk));
-	fmt.Printf(pub_pem);
+	return CipherText, nil
 }
